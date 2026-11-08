@@ -10,12 +10,13 @@ let currentFilter = 'all';
 let activeControlId = null;
 let deleteTargetId = null;
 let currentPassword = null;
+let reconnectInterval = null;
+let pingInterval = null;
 
 document.getElementById('login-btn').addEventListener('click', () => {
     const pass = document.getElementById('admin-password').value;
     if (!pass) return;
     
-    // Request notification permission on user gesture (browser requirement)
     if ("Notification" in window && Notification.permission === "default") {
         Notification.requestPermission();
     }
@@ -118,45 +119,6 @@ function updateActiveCount() {
             localStorage.setItem('sms-badge-x', rect.left);
             localStorage.setItem('sms-badge-y', rect.top);
         });
-
-        badge.addEventListener('touchstart', (e) => {
-            isDragging = true;
-            const rect = badge.getBoundingClientRect();
-            badge.style.bottom = 'auto';
-            badge.style.right = 'auto';
-            badge.style.left = rect.left + 'px';
-            badge.style.top = rect.top + 'px';
-            
-            startX = e.touches[0].clientX;
-            startY = e.touches[0].clientY;
-            initialLeft = rect.left;
-            initialTop = rect.top;
-        }, { passive: true });
-
-        document.addEventListener('touchmove', (e) => {
-            if (!isDragging) return;
-            const dx = e.touches[0].clientX - startX;
-            const dy = e.touches[0].clientY - startY;
-            
-            let newLeft = initialLeft + dx;
-            let newTop = initialTop + dy;
-            
-            const rect = badge.getBoundingClientRect();
-            newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - rect.width));
-            newTop = Math.max(0, Math.min(newTop, window.innerHeight - rect.height));
-
-            badge.style.left = newLeft + 'px';
-            badge.style.top = newTop + 'px';
-        }, { passive: true });
-
-        document.addEventListener('touchend', () => {
-            if (!isDragging) return;
-            isDragging = false;
-            
-            const rect = badge.getBoundingClientRect();
-            localStorage.setItem('sms-badge-x', rect.left);
-            localStorage.setItem('sms-badge-y', rect.top);
-        });
     }
 
     badge.innerHTML = `
@@ -177,21 +139,18 @@ function showDesktopNotification(visitorId, userAgent) {
     };
 
     if (Notification.permission === "granted") {
-        // Fires regardless of whether the tab is in the background or foreground
         const notification = new Notification("New Visitor Connected", options);
         notification.onclick = function() {
             window.focus();
             this.close();
         };
     } else if (Notification.permission === "default") {
-        // If permission hasn't been granted yet, force a prompt
         Notification.requestPermission().then(perm => {
             if (perm === "granted") {
                 new Notification("New Visitor Connected", options);
             }
         });
     } else {
-        // If blocked by the browser, show a hard alert so you don't miss it
         setTimeout(() => {
             alert(`NEW VISITOR CONNECTED\n\nID: ${visitorId}\nDevice: ${parseUserAgent(userAgent)}`);
         }, 100);
@@ -207,12 +166,24 @@ function initWS(password) {
         ws.onclose = null; ws.onmessage = null; ws.onerror = null; ws.onopen = null;
         try { ws.close(); } catch(e) {}
     }
+    
+    if (reconnectInterval) clearInterval(reconnectInterval);
+    if (pingInterval) clearInterval(pingInterval);
 
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const newWs = new WebSocket(`${protocol}${window.location.host}`);
     ws = newWs;
 
-    newWs.onopen = () => newWs.send(JSON.stringify({ type: 'role', role: 'admin', password }));
+    newWs.onopen = () => {
+        newWs.send(JSON.stringify({ type: 'role', role: 'admin', password }));
+        
+        // Keep the connection alive by sending a ping every 15 seconds
+        pingInterval = setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+            }
+        }, 15000);
+    };
 
     newWs.onmessage = async (e) => {
         if (ws !== newWs) return;
@@ -238,7 +209,7 @@ function initWS(password) {
             addOrUpdateVisitor(data.visitor);
             playBeep();
             showAdminToast(data.visitor.id.split('-')[0], data.visitor.userAgent);
-            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent); // Fired here
+            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent);
             toggleEmptyState();
             updateActiveCount();
             return;
@@ -315,8 +286,33 @@ function initWS(password) {
             }
         }
     };
-    newWs.onclose = () => {};
+
+    // Auto-Reconnect logic if the socket drops
+    newWs.onclose = () => {
+        if (reconnectInterval) clearInterval(reconnectInterval);
+        if (pingInterval) clearInterval(pingInterval);
+        
+        if (currentPassword) {
+            showAdminToast("Connection Lost", "Reconnecting...");
+            reconnectInterval = setInterval(() => {
+                initWS(currentPassword);
+            }, 3000);
+        }
+    };
+    
+    newWs.onerror = () => {
+        try { newWs.close(); } catch(e) {}
+    };
 }
+
+// Re-sync connection instantly if you return to the tab after a long time
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && currentPassword) {
+        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            initWS(currentPassword);
+        }
+    }
+});
 
 window.addEventListener('load', () => {
     let savedPass = null;
@@ -364,6 +360,9 @@ function refreshDashboard() {
 function signOut() {
     try { sessionStorage.removeItem('adminPass'); } catch(e) {}
     currentPassword = null;
+
+    if (reconnectInterval) clearInterval(reconnectInterval);
+    if (pingInterval) clearInterval(pingInterval);
 
     if (ws) {
         ws.onclose = null; ws.onmessage = null; ws.onerror = null; ws.onopen = null;
@@ -735,6 +734,8 @@ function sendModalMessage() {
 
 function showAdminToast(title, message) {
     const container = document.getElementById('admin-toast-container');
+    if (!container) return;
+    
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.innerHTML = `
