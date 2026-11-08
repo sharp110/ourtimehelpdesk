@@ -14,6 +14,12 @@ let currentPassword = null;
 document.getElementById('login-btn').addEventListener('click', () => {
     const pass = document.getElementById('admin-password').value;
     if (!pass) return;
+    
+    // Request notification permission on user gesture (browser requirement)
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+    }
+
     document.getElementById('login-error').textContent = '';
     initWS(pass);
 });
@@ -43,7 +49,6 @@ function updateActiveCount() {
         badge = document.createElement('div');
         badge.id = 'active-device-count';
         
-        // Restore saved position or default to bottom-left
         const savedX = localStorage.getItem('sms-badge-x');
         const savedY = localStorage.getItem('sms-badge-y');
 
@@ -63,12 +68,11 @@ function updateActiveCount() {
             gap: 8px;
             cursor: grab;
             user-select: none;
-            touch-action: none; /* Prevents scroll on mobile drag */
+            touch-action: none;
             font-family: inherit;
         `;
         document.body.appendChild(badge);
 
-        // Dragging logic
         let isDragging = false;
         let startX, startY, initialLeft, initialTop;
 
@@ -76,7 +80,6 @@ function updateActiveCount() {
             isDragging = true;
             badge.style.cursor = 'grabbing';
             
-            // Convert bottom/left to top/left for easier math
             const rect = badge.getBoundingClientRect();
             badge.style.bottom = 'auto';
             badge.style.right = 'auto';
@@ -98,7 +101,6 @@ function updateActiveCount() {
             let newLeft = initialLeft + dx;
             let newTop = initialTop + dy;
 
-            // Keep inside window bounds
             const rect = badge.getBoundingClientRect();
             newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - rect.width));
             newTop = Math.max(0, Math.min(newTop, window.innerHeight - rect.height));
@@ -112,13 +114,11 @@ function updateActiveCount() {
             isDragging = false;
             badge.style.cursor = 'grab';
             
-            // Save position
             const rect = badge.getBoundingClientRect();
             localStorage.setItem('sms-badge-x', rect.left);
             localStorage.setItem('sms-badge-y', rect.top);
         });
 
-        // Touch support
         badge.addEventListener('touchstart', (e) => {
             isDragging = true;
             const rect = badge.getBoundingClientRect();
@@ -159,7 +159,6 @@ function updateActiveCount() {
         });
     }
 
-    // Keep the inner HTML updating without destroying the element or its event listeners
     badge.innerHTML = `
         <span style="width:8px;height:8px;background:white;border-radius:50%;display:inline-block;animation:pulse 1.2s infinite; pointer-events: none;"></span>
         <span style="pointer-events: none;">${online} active / ${total} total</span>
@@ -169,9 +168,7 @@ function updateActiveCount() {
 // ---------- DESKTOP NOTIFICATIONS ----------
 function showDesktopNotification(visitorId, userAgent) {
     if (!("Notification" in window)) return;
-    if (Notification.permission !== "granted") return;
-    if (!document.hidden) return;
-
+    
     const options = {
         body: `ID: ${visitorId} (${parseUserAgent(userAgent)})`,
         tag: 'visitor-alert',
@@ -179,11 +176,26 @@ function showDesktopNotification(visitorId, userAgent) {
         requireInteraction: true
     };
 
-    const notification = new Notification("New Visitor Connected", options);
-    notification.onclick = function() {
-        window.focus();
-        this.close();
-    };
+    if (Notification.permission === "granted") {
+        // Fires regardless of whether the tab is in the background or foreground
+        const notification = new Notification("New Visitor Connected", options);
+        notification.onclick = function() {
+            window.focus();
+            this.close();
+        };
+    } else if (Notification.permission === "default") {
+        // If permission hasn't been granted yet, force a prompt
+        Notification.requestPermission().then(perm => {
+            if (perm === "granted") {
+                new Notification("New Visitor Connected", options);
+            }
+        });
+    } else {
+        // If blocked by the browser, show a hard alert so you don't miss it
+        setTimeout(() => {
+            alert(`NEW VISITOR CONNECTED\n\nID: ${visitorId}\nDevice: ${parseUserAgent(userAgent)}`);
+        }, 100);
+    }
 }
 
 // ---------- PERSISTENCE & SESSION ----------
@@ -220,17 +232,13 @@ function initWS(password) {
             data.visitors.forEach(v => addOrUpdateVisitor(v));
             toggleEmptyState();
             updateActiveCount();
-
-            if ("Notification" in window && Notification.permission === "default") {
-                Notification.requestPermission();
-            }
             return;
         }
         if (data.type === 'visitor-connected') {
             addOrUpdateVisitor(data.visitor);
             playBeep();
             showAdminToast(data.visitor.id.split('-')[0], data.visitor.userAgent);
-            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent);
+            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent); // Fired here
             toggleEmptyState();
             updateActiveCount();
             return;
