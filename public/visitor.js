@@ -13,11 +13,11 @@ const iceServers = {
     { urls: "stun:stun1.l.google.com:19302" },
     {
       urls: [
-        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=udp",
-        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=tcp",
+        "turn:91.192.10.147:3478?transport=udp",
+        "turn:91.192.10.147:3478?transport=tcp",
       ],
       username: "kanha",
-      credential: "YOUR_PASS",
+      credential: "TURN_PASSWORD_HERE",
     },
   ],
   iceTransportPolicy: "all",
@@ -31,7 +31,11 @@ const isAndroid = /Android/.test(navigator.userAgent);
 const isMobile = isIOS || isAndroid;
 
 function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  if (
+    ws &&
+    (ws.readyState === WebSocket.OPEN ||
+      ws.readyState === WebSocket.CONNECTING)
+  ) {
     return;
   }
 
@@ -116,9 +120,13 @@ function connectWS() {
       );
       if (accept) {
         controlGranted = true;
-        socket.send(JSON.stringify({ type: "control-granted", target: "admin" }));
+        socket.send(
+          JSON.stringify({ type: "control-granted", target: "admin" }),
+        );
       } else {
-        socket.send(JSON.stringify({ type: "control-denied", target: "admin" }));
+        socket.send(
+          JSON.stringify({ type: "control-denied", target: "admin" }),
+        );
       }
       return;
     }
@@ -191,9 +199,14 @@ function connectWS() {
       }
 
       if (
-        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
-          data.key,
-        )
+        [
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "ArrowDown",
+          "Home",
+          "End",
+        ].includes(data.key)
       ) {
         if (isInput) {
           const start = el.selectionStart;
