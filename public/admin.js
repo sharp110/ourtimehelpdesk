@@ -18,11 +18,11 @@ const iceServers = {
     { urls: "stun:stun1.l.google.com:19302" },
     {
       urls: [
-        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=udp",
-        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=tcp",
+        "turn:91.192.10.147:3478?transport=udp",
+        "turn:91.192.10.147:3478?transport=tcp",
       ],
       username: "kanha",
-      credential: "YOUR_PASS",
+      credential: "TURN_PASSWORD_HERE",
     },
   ],
   iceTransportPolicy: "all",
