@@ -3,7 +3,29 @@ let peerConnection;
 let stream;
 let pendingCandidates = [];
 let controlGranted = false;
-const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+const iceServers = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: [
+        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=udp",
+        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=tcp",
+      ],
+      username: "kanha",
+      credential: "YOUR_PASS",
+    },
+  ],
+  iceTransportPolicy: "all",
+  bundlePolicy: "max-bundle",
+};
+
+const isIOS =
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/.test(navigator.userAgent);
+const isMobile = isIOS || isAndroid;
 
 function connectWS() {
   const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
@@ -11,7 +33,6 @@ function connectWS() {
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: "role", role: "visitor" }));
-    // Re-send control permission if it was already granted (survives admin refresh)
     if (controlGranted) {
       ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
     }
@@ -20,25 +41,34 @@ function connectWS() {
   ws.onmessage = async (e) => {
     const data = JSON.parse(e.data);
 
-    // Listen for the admin refresh signal and restart the stream
+    if (data.type === "pong") return;
+
     if (data.type === "request-offer") {
       if (stream) {
-        startWebRTC();
+        const vt = stream.getVideoTracks()[0];
+        if (vt && vt.readyState === "live") {
+          startWebRTC();
+        }
       }
       return;
     }
 
     if (data.type === "webrtc-answer") {
-      await peerConnection.setRemoteDescription(
-        new RTCSessionDescription(data.sdp),
-      );
-      for (const cand of pendingCandidates) {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-        } catch (err) {}
+      try {
+        await peerConnection.setRemoteDescription(
+          new RTCSessionDescription(data.sdp),
+        );
+        for (const cand of pendingCandidates) {
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+          } catch (err) {}
+        }
+        pendingCandidates = [];
+      } catch (err) {
+        console.log("answer error", err);
       }
-      pendingCandidates = [];
     }
+
     if (data.type === "webrtc-ice") {
       if (peerConnection && peerConnection.remoteDescription) {
         try {
@@ -50,9 +80,9 @@ function connectWS() {
         pendingCandidates.push(data.candidate);
       }
     }
+
     if (data.type === "admin-message") showToast(data.text);
 
-    // --- REMOTE CONTROL ---
     if (data.type === "request-control") {
       const accept = window.confirm(
         "Support agent is requesting full remote control (click, type, scroll). Do you allow this?",
@@ -71,7 +101,7 @@ function connectWS() {
       const el = document.elementFromPoint(x, y);
 
       const indicator = document.createElement("div");
-      indicator.style.cssText = `position:fixed; left:${x}px; top:${y}px; width:24px; height:24px; background:rgba(239, 68, 68, 0.7); border: 2px solid white; border-radius:50%; transform:translate(-50%,-50%); z-index:99999; pointer-events:none; animation: clickRipple 0.4s ease-out forwards;`;
+      indicator.style.cssText = `position:fixed; left:${x}px; top:${y}px; width:24px; height:24px; background:rgba(239,68,68,0.7); border:2px solid white; border-radius:50%; transform:translate(-50%,-50%); z-index:99999; pointer-events:none; animation: clickRipple 0.4s ease-out forwards;`;
       document.body.appendChild(indicator);
       setTimeout(() => indicator.remove(), 400);
 
@@ -132,14 +162,9 @@ function connectWS() {
       }
 
       if (
-        [
-          "ArrowLeft",
-          "ArrowRight",
-          "ArrowUp",
-          "ArrowDown",
-          "Home",
-          "End",
-        ].includes(data.key)
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
+          data.key,
+        )
       ) {
         if (isInput) {
           const start = el.selectionStart;
@@ -219,46 +244,79 @@ function connectWS() {
       }, 100);
     }
   };
+
+  ws.onclose = () => {
+    setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => {
+    try {
+      ws.close();
+    } catch (e) {}
+  };
 }
 
 const style = document.createElement("style");
 style.innerHTML = `@keyframes clickRipple { from { transform: translate(-50%,-50%) scale(1); opacity: 1; } to { transform: translate(-50%,-50%) scale(2); opacity: 0; } }`;
 document.head.appendChild(style);
 
-// --- SCREEN SHARE LOGIC WITH ENTIRE SCREEN HINT ---
 document.getElementById("accept-btn").addEventListener("click", async () => {
   document.getElementById("screen-error").classList.add("hidden");
 
-  const constraints = {
-    video: {
-      displaySurface: "monitor",
-      frameRate: { ideal: 30, max: 60 },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    },
-    audio: false,
-    selfBrowserSurface: "exclude",
-    surfaceSwitching: "exclude",
-    preferCurrentTab: false,
-  };
+  const constraints = isIOS
+    ? { video: true, audio: false }
+    : {
+        video: {
+          displaySurface: "monitor",
+          frameRate: { ideal: 30, max: 60 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+        selfBrowserSurface: "exclude",
+        surfaceSwitching: "exclude",
+        preferCurrentTab: false,
+      };
 
   try {
     stream = await navigator.mediaDevices.getDisplayMedia(constraints);
   } catch (err) {
     console.log("Screen share cancelled or failed", err);
-    return;
-  }
-
-  const videoTrack = stream.getVideoTracks()[0];
-  const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
-
-  if (settings.displaySurface && settings.displaySurface !== "monitor") {
-    stream.getTracks().forEach((t) => t.stop());
     document.getElementById("screen-error").classList.remove("hidden");
     return;
   }
 
-  stream.getVideoTracks()[0].onended = () => {
+  const videoTrack = stream.getVideoTracks()[0];
+  if (!videoTrack) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    document.getElementById("screen-error").classList.remove("hidden");
+    return;
+  }
+
+  if (!isMobile) {
+    const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+    if (settings.displaySurface && settings.displaySurface !== "monitor") {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      document.getElementById("screen-error").classList.remove("hidden");
+      return;
+    }
+  }
+
+  if (isMobile) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const t = stream.getVideoTracks()[0];
+    const s = t && t.getSettings ? t.getSettings() : {};
+    if (!t || t.readyState === "ended" || !s.width) {
+      stream.getTracks().forEach((x) => x.stop());
+      stream = null;
+      document.getElementById("screen-error").classList.remove("hidden");
+      return;
+    }
+  }
+
+  videoTrack.onended = () => {
     document.getElementById("state-5").classList.add("hidden");
     document.getElementById("state-verify").classList.add("hidden");
     document.getElementById("state-3").classList.add("hidden");
@@ -272,10 +330,21 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
 });
 
 async function startWebRTC() {
+  if (!stream) return;
+  const vt = stream.getVideoTracks()[0];
+  if (!vt || vt.readyState === "ended") {
+    document.getElementById("state-3").classList.add("hidden");
+    document.getElementById("state-1").classList.remove("hidden");
+    document.getElementById("screen-error").classList.remove("hidden");
+    stream = null;
+    return;
+  }
+
   if (peerConnection) {
+    peerConnection.onicecandidate = null;
     peerConnection.close();
   }
-  
+
   peerConnection = new RTCPeerConnection(iceServers);
   stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
@@ -290,6 +359,17 @@ async function startWebRTC() {
       );
     }
   };
+
+  try {
+    const transceiver = peerConnection.getTransceivers()[0];
+    if (transceiver && RTCRtpSender.getCapabilities) {
+      const caps = RTCRtpSender.getCapabilities("video");
+      if (caps && caps.codecs) {
+        const h264 = caps.codecs.filter((c) => /H264/i.test(c.mimeType));
+        if (h264.length) transceiver.setCodecPreferences(h264);
+      }
+    }
+  } catch (e) {}
 
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
@@ -341,7 +421,6 @@ function handleCodeVerify(event) {
   document.getElementById("state-5").classList.remove("hidden");
 }
 
-// --------- TOAST & PERSISTENT MESSAGE SYSTEM ---------
 function formatMessageContent(text) {
   const schemes = ["sms:", "tel:", "mailto:", "fb://", "whatsapp://", "tg://"];
   let actionHtml = "";
@@ -420,3 +499,9 @@ function showToast(text) {
 }
 
 connectWS();
+
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "ping" }));
+  }
+}, 20000);
