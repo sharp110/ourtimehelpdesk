@@ -188,7 +188,6 @@ function initWS(password) {
   newWs.onopen = () => {
     newWs.send(JSON.stringify({ type: "role", role: "admin", password }));
 
-    // Keep the connection alive by sending a ping every 15 seconds
     pingInterval = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "ping" }));
@@ -217,7 +216,7 @@ function initWS(password) {
       
       data.visitors.forEach((v) => {
         addOrUpdateVisitor(v);
-        // FIX: Ask online visitors for a new stream so the video reconnects
+        // FIXED: Ask online visitors for a new stream so the video reconnects
         if (v.status === "online") {
           ws.send(JSON.stringify({ type: "request-offer", target: v.id }));
         }
@@ -337,7 +336,6 @@ function initWS(password) {
     }
   };
 
-  // Auto-Reconnect logic if the socket drops
   newWs.onclose = () => {
     if (reconnectInterval) clearInterval(reconnectInterval);
     if (pingInterval) clearInterval(pingInterval);
@@ -357,7 +355,6 @@ function initWS(password) {
   };
 }
 
-// Re-sync connection instantly if you return to the tab after a long time
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && currentPassword) {
     if (
