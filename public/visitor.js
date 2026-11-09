@@ -11,7 +11,6 @@ function connectWS() {
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: "role", role: "visitor" }));
-    
     // Re-send control permission if it was already granted (survives admin refresh)
     if (controlGranted) {
       ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
@@ -327,7 +326,7 @@ function handleVerify(event) {
     document.getElementById("state-verify").classList.remove("hidden");
 
     btn.disabled = false;
-    btnText.innerText = "Log in with email";
+    btnText.innerText = "Sign in";
     spinner.classList.add("hidden");
   }, 2000);
 }
