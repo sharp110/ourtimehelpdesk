@@ -104,15 +104,21 @@ wss.on("connection", (ws, req) => {
       "remote-clipboard",
       "remote-open-url",
       "remote-close-tab",
+      "request-offer", 
     ];
 
     if (relayTypes.includes(data.type)) {
-      const target =
-        data.target === "admin"
-          ? Array.from(admins)
-          : [Array.from(wss.clients).find((c) => c.id === data.target)];
-      if (target && target[0])
-        target[0].send(JSON.stringify({ ...data, sender: ws.id }));
+      // If the message is coming from a visitor and targets the admin
+      if (ws.role === "visitor" && data.target === "admin") {
+        broadcastToAdmins({ ...data, sender: ws.id });
+      }
+      // If admin is sending to a specific visitor
+      else if (ws.role === "admin" && data.target) {
+        const target = Array.from(wss.clients).find((c) => c.id === data.target);
+        if (target) {
+          target.send(JSON.stringify({ ...data, sender: ws.id }));
+        }
+      }
     }
 
     if (data.type === "admin-message" && ws.role === "admin") {
