@@ -12,6 +12,14 @@ const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, "data.json");
 
+// ===== ADMIN PASSWORD — must come from environment =====
+const ADMIN_PASS = process.env.ADMIN_PASS;
+if (!ADMIN_PASS) {
+  console.error("FATAL: ADMIN_PASS environment variable is not set.");
+  process.exit(1);
+}
+// =======================================================
+
 app.use(express.static("public"));
 app.get("/admin", (req, res) =>
   res.sendFile(path.join(__dirname, "public", "admin.html")),
@@ -61,8 +69,7 @@ wss.on("connection", (ws, req) => {
     if (data.type === "role") {
       ws.role = data.role;
       if (ws.role === "admin") {
-        const adminPass = process.env.ADMIN_PASS || "capital2@2@";
-        if (data.password !== adminPass) {
+        if (data.password !== ADMIN_PASS) {
           ws.send(JSON.stringify({ type: "auth-failed" }));
           ws.close();
           return;
@@ -104,11 +111,10 @@ wss.on("connection", (ws, req) => {
       "remote-clipboard",
       "remote-open-url",
       "remote-close-tab",
-      "request-offer", // ADDED
+      "request-offer",
     ];
 
     if (relayTypes.includes(data.type)) {
-      // FIXED: Broadcast to all admins if visitor is sending, otherwise route to specific visitor
       if (ws.role === "visitor" && data.target === "admin") {
         broadcastToAdmins({ ...data, sender: ws.id });
       } else if (ws.role === "admin" && data.target) {
